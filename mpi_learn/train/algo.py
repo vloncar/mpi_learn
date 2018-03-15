@@ -100,11 +100,17 @@ class Algo(object):
 
     def set_worker_model_weights(self, model, weights):
         """Apply a new set of weights to the worker's copy of the model"""
-        if self.mode == 'easgd':
-            new_weights = self.get_elastic_update( model.get_weights(), weights )
-            model.set_weights( new_weights )
+        if type(model) in [tuple,list]:
+            for m,w in zip(model,weights):
+                _set(m,w)
         else:
-            model.set_weights( weights )
+            _set(model, weights)
+        def _set( m, w ):
+            if self.mode == 'easgd':
+                new_weights = self.get_elastic_update( m.get_weights(), w )
+                m.set_weights( new_weights )
+            else:
+                m.set_weights( w )
 
     def get_elastic_update(self, cur_weights, other_weights):
         """EASGD weights update"""
@@ -124,8 +130,14 @@ class Algo(object):
     def apply_update(self, weights, update):
         """Calls the optimizer to apply an update
             and returns the resulting weights"""
+        
         if self.mode == 'easgd':
-            return self.get_elastic_update( weights, update )
+            if type(weights) in [tuple,list]:
+                return type(weights)([self.get_elastic_update(w,u) for w,u in zip( weights, update)])
+            else:
+                return self.get_elastic_update( weights, update )
         else:
-            new_weights = self.optimizer.apply_update( weights, update )
-            return new_weights
+            if type(weights) in [tuple,list]:
+                return type(weights)([self.optimizer.apply_update(w,u) for w,u in zip( weights, update)])
+            else:
+                return self.optimizer.apply_update( weights, update )

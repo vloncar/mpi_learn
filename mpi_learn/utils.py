@@ -57,8 +57,30 @@ def load_model(filename=None, json_str=None, weights_file=None, custom_objects={
     if filename != None:
         with open( filename ) as arch_f:
             json_str = arch_f.readline()
-    model = model_from_json( json_str, custom_objects=custom_objects) 
-    if weights_file is not None:
-        model.load_weights( weights_file )
+
+    _arch = json.loads(json_str)
+    if type(_arch) == list:
+        model = []
+        if type(custom_objects)!=list:
+            print ("this is not going to work")
+            raise Exception("custom object needs to be a list if multiple models are to be created")
+        if type(weights_file)!=list:
+            print ("this is not going to work")
+            raise Exception("weights file needs to be a list if multiple models are to be created")
+        
+        if custom_objects == None:
+            custom_objects = [None]*len(_arch)
+        if weights_file == None:
+            weights_file = [None]*len(_arch)
+        for jso,co,wf in zip(_arch,custom_objects,weights_file):
+            js_str = json.dumps(jso)
+            model.append( model_from_json( js_str, custom_objects=co ))
+            if wf:
+                model[-1].load_weights( wf )
+        model = list(model) ## cast into a list
+    else:
+        model = model_from_json( json_str, custom_objects=custom_objects) 
+        if weights_file is not None:
+            model.load_weights( weights_file )
     return model
 

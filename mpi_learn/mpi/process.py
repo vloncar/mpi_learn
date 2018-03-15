@@ -56,7 +56,11 @@ class MPIProcess(object):
         self.verbose = verbose
         self.custom_objects = custom_objects
 
-        self.update = None
+        self.model = None ## polymorph
+        self.weights = None ## polymorph
+        self.weights_shapes = None ## polymorph
+
+        self.update = None ## polymorph
         self.stop_training = False
         self.time_step = 0
 
@@ -68,11 +72,11 @@ class MPIProcess(object):
 
     def build_model(self):
         """Builds the Keras model and updates model-related attributes"""
-        self.model = self.model_builder.build_model()
+        self.model = self.model_builder.build_model() ## polymorph
         self.compile_model()
-        self.weights = self.model.get_weights()
-        self.weights_shapes = shapes_from_weights( self.weights )
-        self.update = weights_from_shapes( self.weights_shapes )
+        self.weights = self.get_weights()
+        self.weights_shapes = self.get_weights_shapes()
+        self.get_update()
 
     def check_sanity(self):
         """Throws an exception if any model attribute has not been set yet."""
@@ -91,42 +95,98 @@ class MPIProcess(object):
             for obj in remove_for_worker:
                 self.callbacks_list = [ c for c in self.callbacks_list 
                         if not isinstance(c, obj) ]
-        self.model.history = cbks.History()
-        self.callbacks = cbks.CallbackList( self.callbacks_list + [self.model.history] )
-
-        # it's possible to callback a different model than self
-        # (used by Sequential models)
-        if hasattr(self.model, 'callback_model') and self.model.callback_model:
-            self.callback_model = self.model.callback_model
+        if type(self.model) in [tuple,list]:
+            self.callbacks = []
+            self.callback_model = []
+            for m in self.model:
+                m.history = cbks.History()
+                self.callbacks.append( cbks.CallbackList( self.callbacks_list + [m.history] ))
+                if hasattr(m, 'callback_model') and m.callback_model:
+                    self.callback_model.append( m.callback_model )
+                else:
+                    self.callback_model.append( m )
+                self.callbacks[-1].set_model( self.callback_model[-1] )
+                self.callback_model[-1].stop_training = False
+            self.callbacks = type(self.model)(self.callbacks)
+            self.callback_model = type(self.model)(self.callback_model)
         else:
-            self.callback_model = self.model
-        self.callbacks.set_model(self.callback_model)
-        self.callback_model.stop_training = False
+            self.model.history = cbks.History()
+            self.callbacks = cbks.CallbackList( self.callbacks_list + [self.model.history] )
+
+            # it's possible to callback a different model than self
+            # (used by Sequential models)
+            if hasattr(self.model, 'callback_model') and self.model.callback_model:
+                self.callback_model = self.model.callback_model
+            else:
+                self.callback_model = self.model
+            self.callbacks.set_model(self.callback_model)
+            self.callback_model.stop_training = False
 
     def train(self):
         """To be implemented in derived classes"""
         raise NotImplementedError
 
+    def get_update(self):
+        print ("Process {0:d} get update".format(self.rank))
+        if type(self.weights_shapes) in [tuple,list]:
+            self.update = []
+            for ws in self.weights_shapes:
+                self.update.append( weights_from_shapes( wf ) )
+            self.update = type(self.weights_shapes)(self.update)
+        else:
+            self.update = weights_from_shapes( self.weights_shapes )
+            
+    def get_weights_shapes(self):
+        print ("Process {0:d} get weights shapes".format(self.rank))
+        if type(self.weights) in [tuple,list]:
+            self.weights_shapes = []
+            for w in self.weights:
+                self.weights_shapes.append( shapes_from_weights( w ))
+            return type(self.weights)(self.weights_shape)
+        else:
+            return shapes_from_weights( self.weights )
+            
+    def get_weights(self):
+        print ("Process {0:d} get weights".format(self.rank))
+        if type(self.model) in [tuple,list]:
+            self.weights = []
+            for m in self.model:
+                self.weights.append( m.get_weights() )
+            return type(self.model)(self.weights)
+        else:
+            return self.model.get_weights()
+                
     def compile_model(self):
         """Compile the model. Note that the compilation settings
             are relevant only for Workers because the Master updates
             its weights using an mpi_learn optimizer."""
         print ("Process {0:d} compiling model".format(self.rank))
-        self.algo.compile_model( self.model )
+        if type(self.model) in [tuple,list]:
+            for m in self.model:
+                self.algo.compile_model( m )
+        else:
+            self.algo.compile_model( self.model )
 
     def print_metrics(self, metrics):
         """Display metrics computed during training or validation"""
-        names = self.model.metrics_names
-        if len(names) == 1:
-            print "%s: %.3f" % (names[0],metrics)
+        def _show(names, metrics):
+            if len(names) == 1:
+                print "%s: %.3f" % (names[0],metrics)
+            else:
+                for name, metric in zip( names, metrics ):
+                    print ("{0}: {1:.3f}".format(name,metric))
+                print ("")
+
+        if type(self.model) in [tuple,list]:
+            for m in self.model:
+                _show(m.metrics_names, metrics)
         else:
-            for name, metric in zip( names, metrics ):
-                print ("{0}: {1:.3f}".format(name,metric))
-            print ("")
+            _show(self.model.metrics_names, metrics)
 
     def get_logs(self, metrics, val=False):
         """Get dictionary of logs computed during training.
             If val is True, appends 'val' to the beginning of each metric name"""
+        ## needs fixing
         if val:
             return { 'val_'+name:np.asscalar(metric) for name, metric in 
                     zip( self.model.metrics_names, metrics ) }
@@ -247,7 +307,11 @@ class MPIProcess(object):
             if hasattr(self, 'histories'):
                 self.send( obj=self.histories, tag='history' )
             else:
-                self.send( obj=self.model.history.history, tag='history' )
+                if type(self.model) in [tuple,list]:
+                    history_to_send = type(self.model)([m.history for m in self.model])
+                    self.send( obj=history_to_send, tag='history' )
+                else:
+                    self.send( obj=self.model.history.history, tag='history' )
 
     def send_arrays(self, obj, expect_tag, tag, comm=None, dest=None, check_permission=False):
         """Send a list of numpy arrays to the process specified by comm (MPI communicator) 
@@ -300,8 +364,13 @@ class MPIProcess(object):
 
     def recv_weights(self, comm=None, source=None, add_to_existing=False):
         """Receive NN weights layer by layer from the process specified by comm and source"""
-        self.recv_arrays( self.weights, tag='weights', comm=comm, source=source,
-                add_to_existing=add_to_existing )
+        if type(self.weights) in [tuple,list]:
+            for w in self.weights:
+                self.recv_arrays( w, tag='weights', comm=comm, source=source,
+                                  add_to_existing=add_to_existing )
+        else:
+            self.recv_arrays( self.weights, tag='weights', comm=comm, source=source,
+                              add_to_existing=add_to_existing )
 
     def recv_update(self, comm=None, source=None, add_to_existing=False):
         """Receive an update layer by layer from the process specified by comm and source.
@@ -361,6 +430,7 @@ class MPIWorker(MPIProcess):
         for epoch in range(self.num_epochs):
             print ("MPIWorker {0:d} beginning epoch {1:d}".format(self.rank, epoch))
             self.callbacks.on_epoch_begin(epoch)
+            ## to fix
             epoch_metrics = [ 0.0 for i in range( len(self.model.metrics_names) ) ]
             i_batch = 0
             for i_batch, batch in enumerate(self.data.generate_data()):
@@ -398,7 +468,7 @@ class MPIWorker(MPIProcess):
 
     def compute_update(self):
         """Compute the update from the new and old sets of model weights"""
-        self.update = self.algo.compute_update( self.weights, self.model.get_weights() )
+        self.update = self.algo.compute_update( self.weights, self.get_weights() )
 
     def await_signal_from_parent(self):
         """Wait for 'train' signal from parent process"""
