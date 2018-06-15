@@ -12,6 +12,7 @@ from keras.models import Model
 from keras.layers import Input
 from keras import optimizers
 from keras.optimizers import RMSprop,SGD
+from .optimizer import OptimizerBuilder
 #from EcalEnergyGan import generator, discriminator
 import numpy as np
 import numpy.core.umath_tests as umath
@@ -530,30 +531,27 @@ class GANModel(MPIModel):
         print('[INFO] IN GAN MODEL: COMPILE')
 
         def make_opt(**args):
-            lr = args.get('lr',0.0001)
-            prop = args.get('prop',True) ## gets as the default
-
-            oo = args.get('optimizer',None) ## through mpi-learn
-            if type(oo) == SGD or oo == 'sgd':
-                print ('was specified as an SGD by mpi-learn')
-                lr = K.get_value(oo.lr)
-                #lr = oo.lr
-                print ('using %s'%lr)
-                prop = False
-            elif type(oo) == RMSprop or oo == 'rmsprop':
-                print ('was specfiice as an RMSprop by mpi-learn')
-                prop = True
+            oo = args.get('optimizer',None)
+            if oo is not None and isinstance(oo, OptimizerBuilder):
+                if oo.name == 'sgd':
+                    print ('was specified as an SGD by mpi-learn')
+                    lr = oo.config.setdefault('lr', 0.0001)
+                    clipv = oo.config.setdefault('clipvalue', 1000)
+                    print ('using %s'%lr)
+                    default = False
+                elif oo.name == 'rmsprop':
+                    default = False
+                else:
+                    print("Optimizer not supported", oo.name, ", using RMSProp()")
+                    default = True
             else:
-                print ("not supported %s"%(oo))
+                print("Unupported optimizer or no optimizer provided, using RMSProp()")
+                default = True;
 
-            if prop:
-                opt = RMSprop()
+            if default:
+                opt = RMSProp()
             else:
-                opt = SGD(lr=lr,
-                #opt = VSGD(lr=lr,
-                          #clipnorm = 1000.,
-                           clipvalue = 1000.,
-                )
+                opt = oo.build()
 
             print ("optimizer for compiling",opt)
             return opt
